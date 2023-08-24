@@ -1,0 +1,148 @@
+ARG image_tag
+FROM gitlab.lrz.de:5005/robust-devops/students/noise-tool-chiemsee/base_image${image_tag}
+
+RUN apt-get update && apt-get install -y \
+    git git-core curl build-essential libssl-dev libffi-dev python3-dev python3-pip libsasl2-dev libldap2-dev default-libmysqlclient-dev \
+    libgtk2.0-0 libgtk-3-0 libgbm-dev libnotify-dev libgconf-2-4 libnss3 libxss1 libasound2 libxtst6 xauth xvfb \
+    libecpg-dev postgresql-client \
+    wget socat
+
+#ENV NODE_VERSION=18.16.0
+ENV NODE_VERSION=16.20.0
+RUN apt install -y curl
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
+ENV NVM_DIR=/root/.nvm
+RUN . "$NVM_DIR/nvm.sh" && nvm install ${NODE_VERSION}
+RUN . "$NVM_DIR/nvm.sh" && nvm use v${NODE_VERSION}
+RUN . "$NVM_DIR/nvm.sh" && nvm alias default v${NODE_VERSION}
+ENV PATH="/root/.nvm/versions/node/v${NODE_VERSION}/bin/:${PATH}"
+RUN node --version
+RUN npm --version
+
+# Install required packages
+RUN apt-get update && \
+    apt-get install -y \
+    openssl libssl-dev lsof
+RUN npm install -g pnpm
+ENV PATH="$PATH:$HOME/.local/bin"
+
+# install Chromebrowser
+RUN \
+  wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+  echo "deb http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
+  apt-get update && \
+  apt-get install -y dbus-x11 google-chrome-stable && \
+  rm -rf /var/lib/apt/lists/*
+
+# Clone the superset repository and checkout a specific commit
+WORKDIR /superset
+RUN git clone https://github.com/apache/superset.git . && \
+    git checkout 40fffc396c5206b38ae1be63c05c08f43908d576
+
+# Set environmental variables
+ENV FLASK_ENV=development
+ENV SUPERSET_CONFIG=tests.integration_tests.superset_test_config
+ENV SUPERSET_TESTENV=true
+ENV CYPRESS_BASE_URL="http://localhost:8081"
+ENV SUPERSET__SQLALCHEMY_DATABASE_URI=postgresql+psycopg2://superset:superset@127.0.0.1:15432/superset
+ENV PYTHONPATH=/superset
+ENV REDIS_PORT=16379
+
+# Install requirements
+RUN pip install --no-cache-dir --upgrade pip \
+  && pip install --no-cache-dir -r requirements/testing.txt
+
+# # Install dependencies and build the project
+# RUN pnpm install && \
+#     pnpm run update && \
+#     pnpm run build && \
+#     pnpm exec playwright install --with-deps chromium
+
+# Copy the test script to the container
+COPY --chmod=0755 test.sh /test.sh
+
+# Run the test script
+WORKDIR /superset
+ENV EXECUTIONS=2
+ENTRYPOINT ["/bin/bash"]
+CMD ["-c", "/test.sh $EXECUTIONS"]
+
+
+### Another try:
+# pip install psycopg2
+# socat TCP-LISTEN:5432,fork TCP:172.18.0.10:5432 &
+# socat TCP-LISTEN:6379,fork TCP:172.18.0.11:6379 &
+# psql "postgresql://superset:superset@127.0.0.1:5432/superset" <<-EOF
+#     DROP SCHEMA IF EXISTS sqllab_test_db CASCADE;
+#     DROP SCHEMA IF EXISTS admin_database CASCADE;
+#     CREATE SCHEMA sqllab_test_db;
+#     CREATE SCHEMA admin_database;
+# EOF
+# pip install -e . Also done in next command
+# tox -e cypress # Fails because python3.9 is missing
+## Install python 3.9
+# apt-get update
+# apt-get install -y software-properties-common
+# apt-get update
+# add-apt-repository -y ppa:deadsnakes/ppa
+# apt-get update
+# DEBIAN_FRONTEND=noninteractive apt-get install -y python3.9
+# tox -e cypress # No module named "distutils.cmd"
+# apt-get install -y python3.9-distutils
+# tox -e cypress # sasl: Python.h no such file or directory
+# apt-get install -y python3.9-dev
+# tox -e cypress # script is not in allowlist_externals
+# sed -i '/^allowlist_externals =/a\    bash' tox.ini
+# sed -i 's|{toxinidir}/superset-frontend/cypress_build.sh|bash &|g' tox.ini
+# tox -e cypress
+
+#### To execute:
+
+
+# # Install Superset in editable (development) mode
+## Run under NODE_VERSION=16.20.0
+# pip install psycopg2
+# socat TCP-LISTEN:15432,fork TCP:172.18.0.10:5432 &
+# socat TCP-LISTEN:16379,fork TCP:172.18.0.11:6379 &
+# psql "postgresql://superset:superset@127.0.0.1:15432/superset" <<-EOF
+#     DROP SCHEMA IF EXISTS sqllab_test_db CASCADE;
+#     DROP SCHEMA IF EXISTS admin_database CASCADE;
+#     CREATE SCHEMA sqllab_test_db;
+#     CREATE SCHEMA admin_database;
+# EOF
+# pip install -e .
+# export SUPERSET_CONFIG=tests.integration_tests.superset_test_config
+# export SUPERSET_TESTENV=true
+# export CYPRESS_BASE_URL="http://localhost:8081"
+# superset db upgrade
+# superset load_test_users
+# superset load_examples --load-test-data
+# superset init
+# cd superset-frontend/
+  # npm ci
+  # Could be a known bug where static files arnent built properly try with:
+  # npm install -f --no-optional --global webpack webpack-cli
+  # npm install -f --no-optional
+# npm run build-instrumented
+# cd cypress-base/
+# npm ci
+# nohup flask run --no-debugger -p 8081 >"flask.log" 2>&1 </dev/null &
+# npm run cypress-run-chrome
+
+# npm run cypress-run-chrome # Didnt work because cypress was missing some dependencies
+# npm run cypress-run-chrome # Didnt work because cypress couldnt find chrome and couldnt connect to the server
+# npm run cypress-run-chrome # Didnt work because cypress couldnt connect to the server
+# FLASK_ENV=development superset run -p 8088 --with-threads --reload --debugger # did not terminate, probably doesnt start in background
+# superset run --port 8081&
+# npm run cypress-run-chrome # All test are failing because of timeouts to localhost:8081
+# nohup flask run --no-debugger -p 8081 >"flask.log" 2>&1 </dev/null &
+# npm run cypress-run-chrome # All test failing because of 500 - Internal Server Error (Error 99 connecting to localhost:6379. Cannot assign requested address.) apparently used by redis (Superset Docs -> Installation -> Caching)
+# Followed redis install instructions from https://redis.io/docs/getting-started/installation/install-redis-on-linux/
+# but this should work as well:
+# apt-get install -y redis-server
+# nohup redis-server &
+# npm run cypress-run-chrome # Most test fail, maybe because we havent set up a databse (postgres)
+# Have to install and run postgres and setup postgres like in superset-e2e.yml and set SUPERSET__SQLALCHEMY_DATABASE_URI for postgres (maybe just cheat and run them as services in the ci job?)
+# Probably do redis and postgres as seperate containers
+# 
+# 

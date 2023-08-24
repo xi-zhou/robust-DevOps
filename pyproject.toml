@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "noise-tool"
+version = "0.1.1"
+description = ""
+readme = "README.md"
+authors = [
+    "Max Mustermann <max.mustermann@tum.de>",
+]
+packages = [
+    { include = "noiseTool" }
+]
+
+[tool.poetry.scripts]
+noise-tool = "noiseTool.main:main"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+psutil = "^5.9.5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.3.1"
+sphinx = "^7.0.0"
+
+[tool.poetry.group.test.dependencies]
+coverage = "^7.1"
+flake8 = "^3.8.3"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

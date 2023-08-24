@@ -1,0 +1,78 @@
+## Another try:
+pip install psycopg2
+socat TCP-LISTEN:5432,fork TCP:172.18.0.10:5432 &
+socat TCP-LISTEN:6379,fork TCP:172.18.0.11:6379 &
+psql "postgresql://superset:superset@127.0.0.1:5432/superset" <<-EOF
+    DROP SCHEMA IF EXISTS sqllab_test_db CASCADE;
+    DROP SCHEMA IF EXISTS admin_database CASCADE;
+    CREATE SCHEMA sqllab_test_db;
+    CREATE SCHEMA admin_database;
+EOF
+pip install -e . Also done in next command
+tox -e cypress # Fails because python3.9 is missing
+# Install python 3.9
+apt-get update
+apt-get install -y software-properties-common
+apt-get update
+add-apt-repository -y ppa:deadsnakes/ppa
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y python3.9
+tox -e cypress # No module named "distutils.cmd"
+apt-get install -y python3.9-distutils
+tox -e cypress # sasl: Python.h no such file or directory
+apt-get install -y python3.9-dev
+tox -e cypress # script is not in allowlist_externals
+sed -i '/^allowlist_externals =/a\    bash' tox.ini
+sed -i 's|{toxinidir}/superset-frontend/cypress_build.sh|bash &|g' tox.ini
+tox -e cypress
+# WORKS!!!
+
+### To execute:
+
+
+# Install Superset in editable (development) mode
+# Run under NODE_VERSION=16.20.0
+pip install psycopg2
+socat TCP-LISTEN:15432,fork TCP:172.18.0.10:5432 &
+socat TCP-LISTEN:16379,fork TCP:172.18.0.11:6379 &
+psql "postgresql://superset:superset@127.0.0.1:15432/superset" <<-EOF
+    DROP SCHEMA IF EXISTS sqllab_test_db CASCADE;
+    DROP SCHEMA IF EXISTS admin_database CASCADE;
+    CREATE SCHEMA sqllab_test_db;
+    CREATE SCHEMA admin_database;
+EOF
+pip install -e .
+export SUPERSET_CONFIG=tests.integration_tests.superset_test_config
+export SUPERSET_TESTENV=true
+export CYPRESS_BASE_URL="http://localhost:8081"
+superset db upgrade
+superset load_test_users
+superset load_examples --load-test-data
+superset init
+cd superset-frontend/
+  npm ci
+  Could be a known bug where static files arnent built properly try with:
+  npm install -f --no-optional --global webpack webpack-cli
+  npm install -f --no-optional
+npm run build-instrumented
+cd cypress-base/
+npm ci
+nohup flask run --no-debugger -p 8081 >"flask.log" 2>&1 </dev/null &
+npm run cypress-run-chrome
+
+npm run cypress-run-chrome # Didnt work because cypress was missing some dependencies
+npm run cypress-run-chrome # Didnt work because cypress couldnt find chrome and couldnt connect to the server
+npm run cypress-run-chrome # Didnt work because cypress couldnt connect to the server
+FLASK_ENV=development superset run -p 8088 --with-threads --reload --debugger # did not terminate, probably doesnt start in background
+superset run --port 8081&
+npm run cypress-run-chrome # All test are failing because of timeouts to localhost:8081
+nohup flask run --no-debugger -p 8081 >"flask.log" 2>&1 </dev/null &
+npm run cypress-run-chrome # All test failing because of 500 - Internal Server Error (Error 99 connecting to localhost:6379. Cannot assign requested address.) apparently used by redis (Superset Docs -> Installation -> Caching)
+Followed redis install instructions from https://redis.io/docs/getting-started/installation/install-redis-on-linux/
+but this should work as well:
+apt-get install -y redis-server
+nohup redis-server &
+npm run cypress-run-chrome # Most test fail, maybe because we havent set up a databse (postgres)
+Have to install and run postgres and setup postgres like in superset-e2e.yml and set SUPERSET__SQLALCHEMY_DATABASE_URI for postgres (maybe just cheat and run them as services in the ci job?)
+Probably do redis and postgres as seperate containers
+

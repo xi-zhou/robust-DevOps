@@ -1,0 +1,515 @@
+image: python:3.10
+
+stages:
+  - docker_prune
+  - build
+  - test
+  - lint
+  - deploy
+  - eval_build
+  - evaluate
+
+cache:
+  key: one-key-to-rule-them-all
+  paths:
+    - .venv
+
+before_script:
+  - export VERSION="0.1.1+${CI_PIPELINE_IID}"
+  - pip install poetry
+  - poetry config virtualenvs.create true
+  - poetry config virtualenvs.in-project true
+  - poetry install
+
+#docker prune:
+#  stage: docker_prune
+#  image: docker:latest
+#  services:
+#    - name: docker:dind
+#  before_script: []
+#  script:
+#    - docker system prune -af
+
+Build package:
+  stage: build
+  script:
+    - sed -i "s/\(version = \"\).*\(\"\)/\1${VERSION}\2/" pyproject.toml
+    - poetry build
+    - cp -v dist/noise_tool*.tar.gz dist/noise_tool.tar.gz
+    - git checkout pyproject.toml
+  artifacts:
+    paths:
+      - dist/noise_tool.tar.gz
+
+Unit Tests Default Version:
+  stage: test
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: cobertura-coverage.xml
+  script:
+    - poetry run coverage run -m pytest -v --junitxml=report.xml
+    - poetry run coverage report
+    - poetry run coverage xml -o cobertura-coverage.xml
+  coverage: '/^TOTAL.*\s+(\d+\%)$/'
+  cache:
+    key: "$CI_JOB_NAME"
+    #    key: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .venv
+  when: manual
+
+#Unit Test Python3.10.0:
+#  extends: "Unit Tests Default Version"
+#  image: python:3.10.0
+#
+#Unit Test Python3.10.5:
+#  extends: "Unit Tests Default Version"
+#  image: python:3.10.5
+#
+#Unit Test Python3.10.10:
+#  extends: "Unit Tests Default Version"
+#  image: python:3.10.10
+#
+#Unit Test Python3.11:
+#  extends: "Unit Tests Default Version"
+#  image: python:3.11
+
+Linter:
+  stage: lint
+  script:
+    - poetry run flake8 --ignore=E501 noiseTool/
+  when: manual
+
+Deploy:
+  stage: deploy
+  script:
+    - sed -i "s/\(version = \"\).*\(\"\)/\1${VERSION}\2/" pyproject.toml
+    - poetry config repositories.gitlab ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/pypi
+    - echo ${CI_PROJECT_NAME}
+    - poetry config http-basic.gitlab gitlab-ci-token ${CI_JOB_TOKEN}
+    - poetry build
+    - poetry publish --repository gitlab
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+Documentations:
+  stage: deploy
+  script:
+    - poetry run sphinx-build -b html . public/
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+.eval_before_script:
+  before_script:
+    - docker system prune -af
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+    - |
+      if [[ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]]; then
+        tag=""
+        echo "Running on default branch '$CI_DEFAULT_BRANCH': tag = 'latest'"
+      else
+        tag=":$CI_COMMIT_REF_SLUG"
+        echo "Running on branch '$CI_COMMIT_BRANCH': tag = $tag"
+      fi
+# Short version but maybe less readable
+#    - |
+#      tag=$( [[ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]] && echo "" || echo ":$CI_COMMIT_REF_SLUG" )
+#      echo "Running on branch '${CI_COMMIT_BRANCH:-$CI_DEFAULT_BRANCH}': tag = '${tag:-latest}'"
+
+Base Image:
+  image: docker:latest
+  stage: eval_build
+  services:
+    - name: docker:dind
+  extends:
+    - .eval_before_script
+  script:
+    - '[[ -n "$tag" ]] && cp -v dist/noise_tool.tar.gz evaluation_data/base_image/ || true'
+    - docker build --progress=plain --pull --no-cache -t "$CI_REGISTRY_IMAGE/base_image${tag}" evaluation_data/base_image
+    - docker push "$CI_REGISTRY_IMAGE/base_image${tag}"
+  #   - echo "IMAGE_TAG=${tag}" >> build.env
+  # artifacts:
+  #   reports:
+  #     dotenv: build.env
+
+.parallel_eval:
+  parallel:
+    matrix:
+      - NOISE_TOOL_TYPE: none
+        NOISE_TOOL_INTENSITY: none
+      - NOISE_TOOL_TYPE: [ cpu, ram, io, netdelay, netpgk, netbandwidth ]
+        NOISE_TOOL_INTENSITY: [ low, medium, high ]
+
+.project_build:
+  image: docker:latest
+  stage: eval_build
+  needs:
+    - job: Base Image
+      artifacts: true
+  services:
+    - name: docker:dind
+  extends:
+    - .eval_before_script
+  script:
+    - docker build --pull --no-cache -t "$CI_REGISTRY_IMAGE/${PROJECT_NAME}${tag}" --build-arg image_tag=$tag evaluation_data/${PROJECT_NAME}
+    - docker push "$CI_REGISTRY_IMAGE/${PROJECT_NAME}${tag}"
+  when: manual
+
+.project_eval:
+  image: docker:latest
+  stage: evaluate
+  services:
+    - name: docker:dind
+  extends:
+    - .eval_before_script
+  script:
+    - docker pull "$CI_REGISTRY_IMAGE/${PROJECT_NAME}${tag}"
+    - id=$(docker create -e NOISE_TOOL_TYPE -e NOISE_TOOL_INTENSITY --cap-add=NET_ADMIN "$CI_REGISTRY_IMAGE/${PROJECT_NAME}${tag}")
+    - docker start -a $id
+    - docker cp $id:/experiment-artifacts/experiment.zip $CI_PROJECT_DIR/experiment.zip
+  parallel: !reference [ .parallel_eval, parallel ]
+  artifacts:
+    paths:
+      - experiment.zip
+  when: manual
+
+carbon_build:
+  variables:
+    PROJECT_NAME: "carbon"
+  extends:
+    - .project_build
+
+carbon:
+  variables:
+    PROJECT_NAME: "carbon"
+  needs:
+    - job: carbon_build
+  extends:
+    - .project_eval
+
+react-hook-form_build:
+  variables:
+    PROJECT_NAME: "react-hook-form"
+  extends:
+    - .project_build
+    
+react-hook-form:
+  variables:
+    PROJECT_NAME: "react-hook-form"
+  needs:
+    - job: react-hook-form_build
+  extends:
+    - .project_eval  
+
+Angular_build:
+  variables:
+    PROJECT_NAME: "angular"
+  extends:
+    - .project_build
+
+Angular:
+  variables:
+    PROJECT_NAME: "angular"
+  needs:
+    - job: Angular_build
+  extends:
+    - .project_eval
+
+react-select_build:
+  variables:
+    PROJECT_NAME: "react-select"
+  extends:
+    - .project_build
+
+react-select:
+  variables:
+    PROJECT_NAME: "react-select"
+  needs:
+    - job: react-select_build
+  extends:
+    - .project_eval
+
+react-beautiful-dnd_build:
+  variables:
+    PROJECT_NAME: "react-beautiful-dnd"
+  extends:
+    - .project_build
+
+react-beautiful-dnd:
+  variables:
+    PROJECT_NAME: "react-beautiful-dnd"
+  needs:
+    - job: react-beautiful-dnd_build
+  extends:
+    - .project_eval
+
+aos_build:
+  variables:
+    PROJECT_NAME: "aos"
+  extends:
+    - .project_build
+
+aos:
+  variables:
+    PROJECT_NAME: "aos"
+  needs:
+    - job: aos_build
+  extends:
+    - .project_eval
+
+alpine_build:
+  variables:
+    PROJECT_NAME: "alpine"
+  extends:
+    - .project_build
+
+alpine:
+  variables:
+    PROJECT_NAME: "alpine"
+  needs:
+    - job: alpine_build
+  extends:
+    - .project_eval
+
+n8n_build:
+  variables:
+    PROJECT_NAME: "n8n"
+  extends:
+    - .project_build
+
+n8n:
+  variables:
+    PROJECT_NAME: "n8n"
+  needs:
+    - job: n8n_build
+  extends:
+    - .project_eval
+
+shiki_build:
+  variables:
+    PROJECT_NAME: "shiki"
+  extends:
+    - .project_build
+
+shiki:
+  variables:
+    PROJECT_NAME: "shiki"
+  needs:
+    - job: shiki_build
+  extends:
+    - .project_eval
+
+docs_build:
+  variables:
+    PROJECT_NAME: "docs"
+  extends:
+    - .project_build
+
+docs:
+  variables:
+    PROJECT_NAME: "docs"
+  needs:
+    - job: docs_build
+  extends:
+    - .project_eval
+
+cypress_build:
+  variables:
+    PROJECT_NAME: "cypress-io"
+  extends:
+    - .project_build
+
+cypress_io:
+  variables:
+    PROJECT_NAME: "cypress-io"
+  needs:
+    - job: cypress_build
+  extends:
+    - .project_eval
+
+vuetify_build:
+  variables:
+    PROJECT_NAME: "vuetify"
+  extends:
+    - .project_build
+
+vuetify:
+  variables:
+    PROJECT_NAME: "vuetify"
+  needs:
+    - job: vuetify_build
+  extends:
+    - .project_eval
+
+bulma_build:
+  variables:
+    PROJECT_NAME: "bulma"
+  extends:
+    - .project_build
+
+bulma:
+  variables:
+    PROJECT_NAME: "bulma"
+  needs:
+    - job: bulma_build
+  extends:
+    - .project_eval
+
+FreeCodeCamp_build:
+  variables:
+    PROJECT_NAME: "freecodecamp"
+  extends:
+    - .project_build
+
+FreeCodeCamp:
+  variables:
+    PROJECT_NAME: "freecodecamp"
+  needs:
+    - job: FreeCodeCamp_build
+  extends:
+    - .project_eval
+
+Mermaid_build:
+  variables:
+    PROJECT_NAME: "mermaid"
+  extends:
+    - .project_build
+
+Mermaid:
+  variables:
+    PROJECT_NAME: "mermaid"
+  needs:
+    - job: Mermaid_build
+  extends:
+    - .project_eval
+
+Metabase_build:
+  variables:
+    PROJECT_NAME: "metabase"
+  extends:
+    - .project_build
+
+Metabase:
+  variables:
+    PROJECT_NAME: "metabase"
+  needs:
+    - job: Metabase_build
+  extends:
+    - .project_eval
+
+uppy_build:
+  variables:
+    PROJECT_NAME: "uppy"
+  extends:
+    - .project_build
+
+uppy:
+  variables:
+    PROJECT_NAME: "uppy"
+  needs:
+    - job: uppy_build
+  extends:
+    - .project_eval
+
+vuecli_build:
+  variables:
+    PROJECT_NAME: "vue-cli"
+  extends:
+    - .project_build
+
+vuecli:
+  variables:
+    PROJECT_NAME: "vue-cli"
+  needs:
+    - job: vuecli_build
+  extends:
+    - .project_eval
+
+todomvc_build:
+  variables:
+    PROJECT_NAME: "todomvc"
+  tags:
+    - digitalocean
+  extends:
+    - .project_build
+
+todomvc:
+  variables:
+    PROJECT_NAME: "todomvc"
+  tags:
+    - digitalocean
+  needs:
+    - job: todomvc_build
+  extends:
+    - .project_eval
+
+graphql-engine_build:
+  variables:
+    PROJECT_NAME: "graphql-engine"
+  extends:
+    - .project_build
+
+graphql-engine:
+  variables:
+    PROJECT_NAME: "graphql-engine"
+  needs:
+    - job: graphql-engine_build
+  extends:
+    - .project_eval
+
+ionic_build:
+  variables:
+    PROJECT_NAME: "ionic"
+  extends:
+    - .project_build
+
+ionic:
+  variables:
+    PROJECT_NAME: "ionic"
+  needs:
+    - job: ionic_build
+  extends:
+    - .project_eval
+
+gatsby_build:
+  variables:
+    PROJECT_NAME: "gatsby"
+  extends:
+    - .project_build
+
+gatsby:
+  variables:
+    PROJECT_NAME: "gatsby"
+  needs:
+    - job: gatsby_build
+  extends:
+    - .project_eval
+
+superset_build:
+  variables:
+    PROJECT_NAME: "superset"
+  extends:
+    - .project_build
+
+superset:
+  variables:
+    PROJECT_NAME: "superset"
+  needs:
+    - job: superset_build
+  extends:
+    - .project_eval
+  script:
+    - docker pull "$CI_REGISTRY_IMAGE/${PROJECT_NAME}${tag}"
+    - docker network create --subnet=172.18.0.0/16 supersetNet-${CI_JOB_ID} # 
+    - docker run --net=supersetNet-${CI_JOB_ID} --ip 172.18.0.10 -e POSTGRES_USER=superset -e POSTGRES_PASSWORD=superset -d postgres:14-alpine # 
+    - docker run --net=supersetNet-${CI_JOB_ID} --ip 172.18.0.11 -d redis:7-alpine # 
+    - id=$(docker create -e NOISE_TOOL_TYPE -e NOISE_TOOL_INTENSITY --cap-add=NET_ADMIN --net=supersetNet-${CI_JOB_ID} --ip 172.18.0.12 "$CI_REGISTRY_IMAGE/${PROJECT_NAME}${tag}")
+    - docker start -a $id
+    - docker cp $id:/experiment-artifacts/experiment.zip $CI_PROJECT_DIR/experiment.zip
