@@ -1,3 +1,5 @@
+# Robust DevOps: Exploring Stability Factors for UI Tests
+
 You can use the project as follows
 ```shell
 poetry install
@@ -23,3 +25,10 @@ docker run --cap-add=NET_ADMIN base_image_test
 docker run -it --cap-add=NET_ADMIN base_image_b15 /bin/bash
 
 ```
+## Developers
+
+Abodo Elbeltagy, Eren Gulum, Pascal Goldbrunner, Xi Zhou
+
+27.Aprl.2023 - 28.July.2023
+
+Technische Universität München
